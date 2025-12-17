@@ -26,15 +26,17 @@ interface DayData {
 
 const generateDays = () => {
   const days = []
-  const today = new Date()
+  const base = new Date()
+  base.setDate(base.getDate() - 1) // mốc = hôm qua
 
   for (let i = 14; i >= 0; i--) {
-    const date = new Date(today)
-    date.setDate(today.getDate() - i)
+    const date = new Date(base)
+    date.setDate(base.getDate() - i)
+
     days.push({
       date: date.toLocaleDateString("vi-VN"),
       dayOfWeek: date.toLocaleDateString("vi-VN", { weekday: "long" }),
-      isToday: i === 0,
+      isToday: i === 0, // ngày thứ 15 = hôm qua
       points: 0,
       fees: 0,
       airdrop: 0,
@@ -44,6 +46,7 @@ const generateDays = () => {
 
   return days
 }
+
 
 export default function AccountTracker() {
   const [accounts, setAccounts] = useState<Account[]>([
