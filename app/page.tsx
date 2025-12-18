@@ -282,7 +282,7 @@ export default function AccountTracker() {
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">
-              <div className="space-y-2">
+              <div className="flex flex-col-reverse gap-2">
                 {days.map((day, index) => (
                   <div
                     key={day.dateKey}
