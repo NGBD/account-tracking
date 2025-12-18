@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useEffect, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
@@ -15,27 +15,36 @@ interface Account {
 }
 
 interface DayData {
+  dateKey: string // YYYY-MM-DD (khóa để merge/roll ngày)
   date: string
   dayOfWeek: string
-  isToday: boolean
+  isToday: boolean // highlight ngày cuối (hôm qua)
   points: number
   fees: number
   airdrop: number
   earning: number
 }
 
-const generateDays = () => {
-  const days = []
+const toDateKey = (d: Date) => {
+  const y = d.getFullYear()
+  const m = String(d.getMonth() + 1).padStart(2, "0")
+  const day = String(d.getDate()).padStart(2, "0")
+  return `${y}-${m}-${day}`
+}
+
+const build15DaysEndingYesterday = (): DayData[] => {
+  const days: DayData[] = []
   const base = new Date()
   base.setDate(base.getDate() - 1) // mốc = hôm qua
 
   for (let i = 14; i >= 0; i--) {
-    const date = new Date(base)
-    date.setDate(base.getDate() - i)
+    const d = new Date(base)
+    d.setDate(base.getDate() - i)
 
     days.push({
-      date: date.toLocaleDateString("vi-VN"),
-      dayOfWeek: date.toLocaleDateString("vi-VN", { weekday: "long" }),
+      dateKey: toDateKey(d),
+      date: d.toLocaleDateString("vi-VN"),
+      dayOfWeek: d.toLocaleDateString("vi-VN", { weekday: "long" }),
       isToday: i === 0, // ngày thứ 15 = hôm qua
       points: 0,
       fees: 0,
@@ -47,6 +56,30 @@ const generateDays = () => {
   return days
 }
 
+// Giữ data đúng theo ngày, drop ngày out-window, thêm ngày mới trống
+const reconcileDays = (existing?: DayData[]): DayData[] => {
+  const target = build15DaysEndingYesterday()
+
+  const map = new Map<string, DayData>()
+  ;(existing || []).forEach((d) => {
+    // hỗ trợ dữ liệu cũ chưa có dateKey (fallback theo date hiển thị)
+    const key = (d as any).dateKey || d.date
+    map.set(key, d)
+  })
+
+  return target.map((t) => {
+    const old = map.get(t.dateKey) || map.get(t.date)
+    if (!old) return t
+
+    return {
+      ...t,
+      points: Number(old.points) || 0,
+      fees: Number(old.fees) || 0,
+      airdrop: Number(old.airdrop) || 0,
+      earning: Number(old.earning) || 0,
+    }
+  })
+}
 
 export default function AccountTracker() {
   const [accounts, setAccounts] = useState<Account[]>([
@@ -54,13 +87,16 @@ export default function AccountTracker() {
     { id: 2, name: "Tài khoản 2", points: 0, fees: 0, earning: 0 },
     { id: 3, name: "Tài khoản 3", points: 0, fees: 0, earning: 0 },
   ])
-  const [selectedAccount, setSelectedAccount] = useState<number | null>(null)
-  const [accountDays, setAccountDays] = useState<Record<number, DayData[]>>({
-    1: generateDays(),
-    2: generateDays(),
-    3: generateDays(),
-  })
 
+  const [selectedAccount, setSelectedAccount] = useState<number | null>(null)
+
+  const [accountDays, setAccountDays] = useState<Record<number, DayData[]>>(() => ({
+    1: build15DaysEndingYesterday(),
+    2: build15DaysEndingYesterday(),
+    3: build15DaysEndingYesterday(),
+  }))
+
+  // Load localStorage + reconcile để luôn có window 15 ngày kết thúc hôm qua
   useEffect(() => {
     const savedAccounts = localStorage.getItem("accounts")
     const savedAccountDays = localStorage.getItem("accountDays")
@@ -68,11 +104,56 @@ export default function AccountTracker() {
     if (savedAccounts) {
       setAccounts(JSON.parse(savedAccounts))
     }
+
     if (savedAccountDays) {
-      setAccountDays(JSON.parse(savedAccountDays))
+      const parsed = JSON.parse(savedAccountDays) as Record<number, DayData[]>
+      setAccountDays({
+        1: reconcileDays(parsed?.[1]),
+        2: reconcileDays(parsed?.[2]),
+        3: reconcileDays(parsed?.[3]),
+      })
+    } else {
+      setAccountDays({
+        1: build15DaysEndingYesterday(),
+        2: build15DaysEndingYesterday(),
+        3: build15DaysEndingYesterday(),
+      })
     }
   }, [])
 
+  // Auto-roll khi qua ngày (giữ data theo dateKey + cập nhật localStorage qua effect save)
+  useEffect(() => {
+    const rollIfNeeded = () => {
+      setAccountDays((prev) => ({
+        1: reconcileDays(prev[1]),
+        2: reconcileDays(prev[2]),
+        3: reconcileDays(prev[3]),
+      }))
+    }
+
+    // chạy 1 lần ngay khi mount (phòng trường hợp tab mở qua ngày)
+    rollIfNeeded()
+
+    const now = new Date()
+    const next = new Date(now)
+    next.setDate(now.getDate() + 1)
+    next.setHours(0, 1, 0, 0) // 00:01
+
+    const ms = next.getTime() - now.getTime()
+    let intervalId: number | undefined
+
+    const timeoutId = window.setTimeout(() => {
+      rollIfNeeded()
+      intervalId = window.setInterval(rollIfNeeded, 24 * 60 * 60 * 1000)
+    }, ms)
+
+    return () => {
+      window.clearTimeout(timeoutId)
+      if (intervalId) window.clearInterval(intervalId)
+    }
+  }, [])
+
+  // Save localStorage
   useEffect(() => {
     localStorage.setItem("accounts", JSON.stringify(accounts))
   }, [accounts])
@@ -81,19 +162,17 @@ export default function AccountTracker() {
     localStorage.setItem("accountDays", JSON.stringify(accountDays))
   }, [accountDays])
 
+  // Tính lại tổng từng account từ 15 ngày
   useEffect(() => {
     setAccounts((prevAccounts) =>
       prevAccounts.map((account) => {
         const days = accountDays[account.id] || []
 
         const totalDayPoints = days.reduce((sum, day) => sum + (Number(day.points) || 0), 0)
-
         const totalAirdrop = days.reduce((sum, day) => sum + (Number(day.airdrop) || 0), 0)
-
         const calculatedPoints = totalDayPoints - totalAirdrop * 15
 
         const calculatedFees = days.reduce((sum, day) => sum + (Number(day.fees) || 0), 0)
-
         const accountEarnings = days.reduce((sum, day) => sum + (Number(day.earning) || 0), 0)
 
         return {
@@ -106,8 +185,8 @@ export default function AccountTracker() {
     )
   }, [accountDays])
 
-  const updateAccount = (id: number, field: keyof Account, value: string) => {
-    setAccounts(accounts.map((account) => (account.id === id ? { ...account, [field]: value } : account)))
+  const updateAccountName = (id: number, value: string) => {
+    setAccounts((prev) => prev.map((a) => (a.id === id ? { ...a, name: value } : a)))
   }
 
   const updateDayData = (
@@ -124,7 +203,7 @@ export default function AccountTracker() {
 
   const totalPoints = accounts.reduce((sum, acc) => sum + (Number(acc.points) || 0), 0)
   const totalFees = accounts.reduce((sum, acc) => sum + (Number(acc.fees) || 0), 0)
-  const totalEarningsFromAirdrop = accounts.reduce((sum, account) => sum + (Number(account.earning) || 0), 0)
+  const totalEarnings = accounts.reduce((sum, acc) => sum + (Number(acc.earning) || 0), 0)
 
   const selectedAccountData = accounts.find((acc) => acc.id === selectedAccount)
   const days = selectedAccount ? accountDays[selectedAccount] : []
@@ -157,7 +236,7 @@ export default function AccountTracker() {
                   <Input
                     id={`name-${account.id}`}
                     value={account.name}
-                    onChange={(e) => updateAccount(account.id, "name", e.target.value)}
+                    onChange={(e) => updateAccountName(account.id, e.target.value)}
                     onClick={(e) => e.stopPropagation()}
                     className="mt-1"
                     placeholder="Nhập tên"
@@ -206,11 +285,9 @@ export default function AccountTracker() {
               <div className="space-y-2">
                 {days.map((day, index) => (
                   <div
-                    key={index}
+                    key={day.dateKey}
                     className={`flex items-center justify-between p-4 rounded-lg border transition-all ${
-                      day.isToday
-                        ? "bg-blue-100 border-blue-500 shadow-md"
-                        : "bg-white border-gray-200 hover:bg-gray-50"
+                      day.isToday ? "bg-blue-100 border-blue-500 shadow-md" : "bg-white border-gray-200 hover:bg-gray-50"
                     }`}
                   >
                     <div className="flex items-center gap-4">
@@ -225,9 +302,13 @@ export default function AccountTracker() {
                         <div className="text-sm text-gray-600">{day.dayOfWeek}</div>
                       </div>
                     </div>
+
                     {day.isToday && (
-                      <span className="bg-blue-500 text-white px-3 py-1 rounded-full text-sm font-medium">Hôm nay</span>
+                      <span className="bg-blue-500 text-white px-3 py-1 rounded-full text-sm font-medium">
+                        Hôm qua
+                      </span>
                     )}
+
                     <div className="flex items-center gap-4">
                       <div className="flex items-center gap-2">
                         <Label className="text-sm font-medium whitespace-nowrap">Điểm:</Label>
@@ -247,6 +328,7 @@ export default function AccountTracker() {
                           </SelectContent>
                         </Select>
                       </div>
+
                       <div className="flex items-center gap-2">
                         <Label className="text-sm font-medium whitespace-nowrap">Fee:</Label>
                         <Select
@@ -265,6 +347,7 @@ export default function AccountTracker() {
                           </SelectContent>
                         </Select>
                       </div>
+
                       <div className="flex items-center gap-2">
                         <Label className="text-sm font-medium whitespace-nowrap">Airdrop:</Label>
                         <Select
@@ -283,6 +366,7 @@ export default function AccountTracker() {
                           </SelectContent>
                         </Select>
                       </div>
+
                       <div className="flex items-center gap-2">
                         <Label className="text-sm font-medium whitespace-nowrap">Tiền nhận:</Label>
                         <Input
@@ -309,20 +393,14 @@ export default function AccountTracker() {
             <CardTitle>Tổng Kết</CardTitle>
           </CardHeader>
           <CardContent className="pt-6">
-            <div className="grid grid-cols-3 gap-6">
-              <div className="text-center p-4 bg-blue-50 rounded-lg">
-                <p className="text-sm text-gray-600 mb-1">Tổng số điểm</p>
-                <p className="text-3xl font-bold text-blue-600">{isNaN(totalPoints) ? 0 : totalPoints}</p>
-              </div>
+            <div className="grid grid-cols-2 gap-6">
               <div className="text-center p-4 bg-indigo-50 rounded-lg">
                 <p className="text-sm text-gray-600 mb-1">Tổng phí đã dùng</p>
                 <p className="text-3xl font-bold text-indigo-600">{isNaN(totalFees) ? 0 : totalFees}</p>
               </div>
               <div className="text-center p-4 bg-green-50 rounded-lg">
                 <p className="text-sm text-gray-600 mb-1">Tổng tiền đã nhận</p>
-                <p className="text-3xl font-bold text-green-600">
-                  {isNaN(totalEarningsFromAirdrop) ? 0 : totalEarningsFromAirdrop}
-                </p>
+                <p className="text-3xl font-bold text-green-600">{isNaN(totalEarnings) ? 0 : totalEarnings}</p>
               </div>
             </div>
           </CardContent>
